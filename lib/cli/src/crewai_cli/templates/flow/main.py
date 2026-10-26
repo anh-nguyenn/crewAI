@@ -1,5 +1,7 @@
 #!/usr/bin/env python
+import json
 from pathlib import Path
+import sys
 
 from pydantic import BaseModel
 
@@ -9,7 +11,7 @@ from {{folder_name}}.crews.content_crew.content_crew import ContentCrew
 
 
 class ContentState(BaseModel):
-    topic: str = ""
+    topic: str = "AI Agents"
     outline: str = ""
     draft: str = ""
     final_post: str = ""
@@ -22,10 +24,8 @@ class ContentFlow(Flow[ContentState]):
         print("Planning content")
 
         if crewai_trigger_payload:
-            self.state.topic = crewai_trigger_payload.get("topic", "AI Agents")
+            self.state.topic = crewai_trigger_payload.get("topic", self.state.topic)
             print(f"Using trigger payload: {crewai_trigger_payload}")
-        else:
-            self.state.topic = "AI Agents"
 
         print(f"Topic: {self.state.topic}")
 
@@ -52,8 +52,12 @@ class ContentFlow(Flow[ContentState]):
 
 
 def kickoff():
+    """
+    Run the flow. `crewai run --inputs '{"topic": "..."}'` passes that JSON as the first argument.
+    """
+    inputs = json.loads(sys.argv[1]) if len(sys.argv) > 1 else None
     content_flow = ContentFlow()
-    content_flow.kickoff()
+    content_flow.kickoff(inputs=inputs)
 
 
 def plot():
@@ -65,9 +69,6 @@ def run_with_trigger():
     """
     Run the flow with trigger payload.
     """
-    import json
-    import sys
-
     if len(sys.argv) < 2:
         raise Exception("No trigger payload provided. Please provide JSON payload as argument.")
 

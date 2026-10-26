@@ -27,6 +27,8 @@ from crewai_cli.version import get_crewai_tools_dependency, get_crewai_version
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from crewai_cli.crew_run_tui import CrewRunApp
 
 
@@ -813,7 +815,7 @@ def run_crew(
 def _reject_inputs_for_non_flow(inputs: str | None) -> None:
     if inputs is not None:
         raise click.UsageError(
-            "--inputs is only supported for declarative flows and crews"
+            "--inputs is only supported for flows and declarative crews"
         )
 
 
@@ -845,12 +847,8 @@ def _run_flow_project(
         run_declarative_flow_in_project_env(definition=definition, inputs=inputs)
         return
 
-    # No configured declarative flow definition to resolve inputs against.
-    if inputs is not None:
-        raise click.UsageError(
-            "--inputs requires a declarative flow definition "
-            "([tool.crewai].definition) or --definition"
-        )
+    # Validate --inputs up front so bad JSON fails before we spin up the uv env.
+    parse_inputs_json(inputs)
 
     from crewai_cli.kickoff_flow import (
         _load_conversational_flow_from_kickoff_script,
@@ -859,10 +857,19 @@ def _run_flow_project(
 
     flow = _load_conversational_flow_from_kickoff_script()
     if flow is not None:
+        if inputs is not None:
+            raise click.UsageError(
+                "--inputs is not supported for a conversational flow: "
+                "each turn's input is the message you type"
+            )
         _run_conversational_flow_tui(flow)
         return
 
-    _execute_uv_script("kickoff", entity_type="flow")
+    if inputs is None:
+        _execute_uv_script("kickoff", entity_type="flow")
+    else:
+        # The scaffold's kickoff() reads a JSON object from its first argument.
+        _execute_uv_script("kickoff", entity_type="flow", script_args=[inputs])
 
 
 def _run_classic_crew_project(
@@ -894,6 +901,7 @@ def _execute_uv_script(
     *,
     entity_type: str,
     trained_agents_file: str | None = None,
+    script_args: Sequence[str] = (),
 ) -> None:
     """Execute a project script through uv.
 
@@ -902,8 +910,9 @@ def _execute_uv_script(
         entity_type: The user-facing entity being run.
         trained_agents_file: Optional trained-agents pickle path forwarded to
             the subprocess via the ``CREWAI_TRAINED_AGENTS_FILE`` env var.
+        script_args: Arguments appended to the script's command line.
     """
-    command = ["uv", "run", script_name]
+    command = ["uv", "run", script_name, *script_args]
 
     env = build_env_with_all_tool_credentials()
     if trained_agents_file:

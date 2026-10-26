@@ -7,9 +7,11 @@ import subprocess
 import sys
 
 import click
+from click.testing import CliRunner
 import pytest
 from crewai_core.constants import CREWAI_TRAINED_AGENTS_FILE_ENV
 
+from crewai_cli.cli import crewai
 import crewai_cli.input_prompt as input_prompt_module
 import crewai_cli.run_crew as run_crew_module
 
@@ -1109,7 +1111,7 @@ def test_run_crew_inputs_rejected_for_classic_crew(monkeypatch):
         run_crew_module.run_crew(inputs='{"topic":"AI"}')
 
     assert (
-        "--inputs is only supported for declarative flows and crews"
+        "--inputs is only supported for flows and declarative crews"
         in exc_info.value.message
     )
 
@@ -1215,6 +1217,100 @@ def test_run_crew_runs_python_flow_project(monkeypatch, capsys):
 
     assert capsys.readouterr().out == ""
     assert calls == [("kickoff", {"entity_type": "flow"})]
+
+
+def _python_flow_project(monkeypatch, conversational_flow: object = None) -> list:
+    calls: list = []
+    monkeypatch.setattr(
+        run_crew_module,
+        "read_toml",
+        lambda: {"tool": {"crewai": {"type": "flow"}}},
+    )
+    monkeypatch.setattr(
+        run_crew_module,
+        "_execute_uv_script",
+        lambda script_name, **kwargs: calls.append((script_name, kwargs)),
+    )
+    monkeypatch.setattr(
+        "crewai_cli.kickoff_flow._load_conversational_flow_from_kickoff_script",
+        lambda: conversational_flow,
+    )
+    return calls
+
+
+def test_run_crew_passes_inputs_to_python_flow_kickoff_script(monkeypatch):
+    calls = _python_flow_project(monkeypatch)
+
+    run_crew_module.run_crew(inputs='{"topic":"AI"}')
+
+    assert calls == [
+        ("kickoff", {"entity_type": "flow", "script_args": ['{"topic":"AI"}']})
+    ]
+
+
+def test_run_crew_passes_inputs_through_cli_to_python_flow(monkeypatch):
+    calls = _python_flow_project(monkeypatch)
+
+    result = CliRunner().invoke(crewai, ["run", "--inputs", '{"topic": "AI"}'])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        ("kickoff", {"entity_type": "flow", "script_args": ['{"topic": "AI"}']})
+    ]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "message"),
+    [
+        ("{bad", "Invalid --inputs JSON: Expecting property name"),
+        ("[1]", "Invalid --inputs JSON: expected an object."),
+    ],
+)
+def test_run_crew_rejects_invalid_inputs_for_python_flow_before_running(
+    monkeypatch, capsys, inputs, message
+):
+    calls = _python_flow_project(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_crew_module.run_crew(inputs=inputs)
+
+    assert exc_info.value.code == 1
+    assert message in capsys.readouterr().err
+    assert calls == []
+
+
+def test_run_crew_rejects_inputs_for_conversational_python_flow(monkeypatch):
+    calls = _python_flow_project(monkeypatch, conversational_flow=object())
+    monkeypatch.setattr(
+        "crewai_cli.kickoff_flow._run_conversational_flow_tui",
+        lambda _flow: pytest.fail("--inputs must not open the chat TUI"),
+    )
+
+    with pytest.raises(
+        click.UsageError, match="not supported for a conversational flow"
+    ):
+        run_crew_module.run_crew(inputs="{}")
+
+    assert calls == []
+
+
+def test_execute_uv_script_appends_script_args(monkeypatch):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        run_crew_module, "build_env_with_all_tool_credentials", lambda: {}
+    )
+    monkeypatch.setattr(
+        run_crew_module.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+
+    run_crew_module._execute_uv_script(
+        "kickoff", entity_type="flow", script_args=['{"a": 1}']
+    )
+    run_crew_module._execute_uv_script("kickoff", entity_type="flow")
+
+    assert commands == [["uv", "run", "kickoff", '{"a": 1}'], ["uv", "run", "kickoff"]]
 
 
 def test_run_crew_runs_conversational_flow_tui(monkeypatch, capsys):
